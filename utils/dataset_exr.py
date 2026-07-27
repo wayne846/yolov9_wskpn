@@ -5,15 +5,29 @@ import pyexr
 import torch
 from torch.utils.data import Dataset
 import torchvision.transforms.functional as TF
+from skimage.transform import resize
 
+def robust_normalize(img):
+    p_low = np.percentile(img, 1)
+    p_high = np.percentile(img, 99.9999)
+    img_clipped = np.clip(img, p_low, p_high)    
+    return img_clipped
 
+def Normalize(img):
+    img = img.astype(np.float32)
+    normalized = (img - np.min(img)) / (np.max(img) - np.min(img) + 1e-6) * (1.0 - 0.0)
+    return normalized
+
+# for specular
+def log_transform(img, epsilon=1e-6):
+    return np.log(img + epsilon)
+    
 def Padding(img, w):
     return np.pad(img, ((w, w), (w, w), (0, 0)))
 
 class DataBase:
     def __init__(self, crop_size=128):
         folder_name = os.path.join("dataset")
-        # scene_names = ["classroom", "living-room", "san-miguel", "sponza-glossy", "sponza"]
         scene_names = ["bistro"]
             
         # img_num_per_scene = 60
@@ -22,22 +36,28 @@ class DataBase:
         irradiance_file_names = [os.path.join(folder_name, scene_name, "acc_colors", "color"+str(i)+".exr") for scene_name in scene_names for i in range(img_num_per_scene)]
         reference_file_names = [os.path.join(folder_name, scene_name, "inputs", "reference"+str(i)+".exr") for scene_name in scene_names for i in range(img_num_per_scene)]
         normal_file_names = [os.path.join(folder_name, scene_name, "inputs", "shading_normal"+str(i)+".exr") for scene_name in scene_names for i in range(img_num_per_scene)]
+        roughness_file_names = [os.path.join(folder_name, scene_name, "inputs", "roughness"+str(i)+".exr") for scene_name in scene_names for i in range(img_num_per_scene)]
         depth_file_names = [os.path.join(folder_name, scene_name, "depth", "depth"+str(i)+".exr") for scene_name in scene_names for i in range(img_num_per_scene)] # already in range [0, 1]
-        
+
         self.train_inputs, self.train_targets = [], []
         self.test_inputs, self.test_targets = [], []
         for i in tqdm(range(len(reference_file_names))):
             irradiance_img = pyexr.read(irradiance_file_names[i])[:, :, :3] # ignore alpha channel
-            albedo_img = pyexr.read(albedo_file_names[i])[:, :, :3]
+            irradiance_img = robust_normalize(irradiance_img)
+            albedo_img = Normalize(pyexr.read(albedo_file_names[i])[:, :, :3])
+
             reference_img = pyexr.read(reference_file_names[i])[:, :, :3]
             normal_img = pyexr.read(normal_file_names[i])[:, :, :3]
             normal_img = normal_img * 0.5 + 0.5
             depth_img = pyexr.read(depth_file_names[i])[:, :, 0:1]
-            depth_img = (depth_img - np.min(depth_img)) / (np.max(depth_img) - np.min(depth_img))
+            depth_img = (depth_img - np.min(depth_img)) / (np.max(depth_img) - np.min(depth_img)) # normalize depth to [0, 1]
+            roughness_img = pyexr.read(roughness_file_names[i])[:, :, 3:4]
+            roughness_img = (roughness_img - np.min(roughness_img)) / (np.max(roughness_img) - np.min(roughness_img) + 1e-6) # normalize depth to [0, 1]
 
             if i < (img_num_per_scene * 0.8) - 1:
                 inputs = np.concatenate((Padding(irradiance_img, crop_size),
                                          Padding(albedo_img, crop_size),
+                                         Padding(roughness_img, crop_size),
                                          Padding(normal_img, crop_size),
                                          Padding(depth_img, crop_size)), axis=2)
                 targets = Padding(reference_img, crop_size)
@@ -47,6 +67,7 @@ class DataBase:
             else:
                 inputs = np.concatenate((irradiance_img,
                                          albedo_img,
+                                         roughness_img,
                                          normal_img,
                                          depth_img), axis=2)
                 targets = reference_img

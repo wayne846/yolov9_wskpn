@@ -7,15 +7,18 @@ pip install pyexr
 # Train
 ```
 python train.py \
+   --weights yolov9-c.pt \
    --cfg models/detect/yolov9-wskpn.yaml \
    --data data/wskpn.yaml \
    --hyp data/hyps/hyp.scratch-high.yaml \
+   --optimizer Adam \
    --batch-size 16 \
    --epochs 100 \
    --imgsz 128 \
    --device 0 \
    --workers 4 \
-   --noplots
+   --noplots \
+   --freeze 2 3 4 5 6 7 8 9
 ```
 
 # YOLOv9

@@ -25,6 +25,14 @@ try:
 except ImportError:
     thop = None
 
+import numpy as np
+
+def BMFRGammaCorrection(img):
+    if isinstance(img, np.ndarray):
+        return np.clip(np.power(np.maximum(img, 0.0), 0.454545), 0.0, 1.0)
+    elif isinstance(img, torch.Tensor):
+        return torch.pow(torch.clamp(img, min=0.0, max=1.0), 0.454545)
+
 class WSKPNHead(nn.Module):
     # WSKPN 影像重建與濾波頭
     def __init__(self, kernel_num=6, ch=()):
@@ -116,6 +124,22 @@ class WSKPNHead(nn.Module):
         x_out = torch.clamp(x_out, min=0.0, max=65000.0)
         
         return x_out
+
+class WSKPNConv(Conv):
+    # WSKPN 專用的第一層卷積，內建 Gamma Correction 預處理
+    def forward(self, x):
+        # x 是原始的 10 通道 HDR 輸入：[Irradiance(3), Albedo(3), Normal(3), Depth(1)]
+        x_irradiance = x[:, 0:3]
+        x_albedo = x[:, 3:6]
+        
+        # 原汁原味使用 WSKPN 官方的函式與變數命名邏輯
+        gamma_color = BMFRGammaCorrection(x_irradiance * x_albedo)
+        
+        # 將校正後的 LDR 顏色與後面的 Normal, Depth 重新拼接
+        x_ldr = torch.cat((gamma_color, x[:, 3:]), dim=1)
+        
+        # 呼叫原本 Conv 的前向傳播進行卷積
+        return super().forward(x_ldr)
 
 class Detect(nn.Module):
     # YOLO Detect head for detection models
@@ -826,7 +850,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
 
         n = n_ = max(round(n * gd), 1) if n > 1 else n  # depth gain
         if m in {
-            Conv, AConv, ConvTranspose, 
+            Conv, WSKPNConv,AConv, ConvTranspose, 
             Bottleneck, SPP, SPPF, DWConv, BottleneckCSP, nn.ConvTranspose2d, DWConvTranspose2d, SPPCSPC, ADown,
             ELAN1, RepNCSPELAN4, SPPELAN}:
             c1, c2 = ch[f], args[0]

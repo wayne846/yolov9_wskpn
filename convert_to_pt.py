@@ -28,6 +28,7 @@ def convert():
             f_normal = os.path.join(folder_name, scene, "inputs", f"shading_normal{i}.exr")
             f_depth = os.path.join(folder_name, scene, "depth", f"depth{i}.exr")
             f_ref = os.path.join(folder_name, scene, "inputs", f"reference{i}.exr")
+            f_roughness = os.path.join(folder_name, scene, "inputs", f"roughness{i}.exr")
 
             if not os.path.exists(f_ref): 
                 continue # 如果檔案不存在就跳過
@@ -37,20 +38,17 @@ def convert():
             albedo_img = pyexr.read(f_albedo)[:, :, :3]
             reference_img = pyexr.read(f_ref)[:, :, :3]
             normal_img = pyexr.read(f_normal)[:, :, :3]
-            
-            # 正規化
-            normal_img = normal_img * 0.5 + 0.5
             depth_img = pyexr.read(f_depth)[:, :, 0:1]
-            depth_img = (depth_img - np.min(depth_img)) / (np.max(depth_img) - np.min(depth_img) + 1e-6)
-
-            # 合併通道並儲存
-            inputs = np.concatenate((irradiance_img, albedo_img, normal_img, depth_img), axis=2)
-            targets = reference_img
+            roughness_img = pyexr.read(f_roughness)[:, :, 3:4]
 
             # 打包成 Dict 並存檔為 PyTorch Tensor
             tensor_dict = {
-                'inputs': torch.tensor(inputs, dtype=torch.float16),
-                'targets': torch.tensor(targets, dtype=torch.float16)
+                'irradiance': torch.tensor(irradiance_img, dtype=torch.float16),
+                'albedo': torch.tensor(albedo_img, dtype=torch.float16),
+                'normal': torch.tensor(normal_img, dtype=torch.float16),
+                'depth': torch.tensor(depth_img, dtype=torch.float16),
+                'roughness': torch.tensor(roughness_img, dtype=torch.float16),
+                'targets': torch.tensor(reference_img, dtype=torch.float16)
             }
             torch.save(tensor_dict, os.path.join(save_dir, f"frame_{i}.pt"))
 
