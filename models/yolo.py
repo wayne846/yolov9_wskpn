@@ -26,6 +26,7 @@ except ImportError:
     thop = None
 
 import numpy as np
+import torch.nn.functional as F
 
 def BMFRGammaCorrection(img):
     if isinstance(img, np.ndarray):
@@ -67,13 +68,13 @@ class WSKPNHead(nn.Module):
 
     def forward(self, x):
         # x[0] 是 YOLO 的特徵圖 (Downsampled)
-        # x[1] 是 原始 10 通道輸入影像 (Full Resolution)
+        # x[1] 是 原始 11 通道輸入影像 (Full Resolution)
         features = x[0]
         original_input = x[1]
         B, _, H, W = original_input.shape
 
         # 1. 將特徵圖上採樣 (Upsample) 回原圖解析度
-        features = torch.nn.functional.interpolate(features, size=(H, W), mode='bilinear', align_corners=False)
+        features = F.interpolate(features, size=(H, W), mode='bilinear', align_corners=False)
 
         # 2. 預測 Guidemap 與 Alpha
         x_final_5 = self.conv_final_5(features)
@@ -81,54 +82,44 @@ class WSKPNHead(nn.Module):
         x_final_1 = self.conv_final_1(features)
         x_final_out = x_final_5 + x_final_3 + x_final_1
 
-        # 1. 取出要送進 exp 的原始 Logits (形狀為 [Batch, Kernel_Num, H, W])
-        logits = x_final_out[:, :self.kernel_num]
-        
-        # 2. 尋找每個像素在所有 Kernel 通道中的最大值 (保持維度以利廣播計算)
-        # dim=1 代表在 Kernel_Num 這個維度上找最大值
-        max_val = torch.amax(logits, dim=1, keepdim=True)
-        
-        # 3. 減去最大值 (Shift-Invariant 技巧)
-        # 如此一來，最大的數值必為 0 (exp(0)=1)，其餘皆為負數，徹底免疫 Overflow！
-        safe_logits = logits - max_val
-        
-        # 4. 安全地執行指數運算
-        x_guidemap = torch.exp(safe_logits)
-        x_alpha = self.softmax(x_final_out[:, self.kernel_num:])
+        # 使用 FP32 進行 WSKPN 重建運算
+        with torch.cuda.amp.autocast(enabled=False):
+            # 強制將特徵轉為 float32
+            x_final_out_f32 = x_final_out.float()
+            x_irradiance = original_input[:, 0:3].float()
+            x_albedo = original_input[:, 3:6].float()
 
-        # 3. 提取原圖的 Irradiance 與 Albedo
-        x_irradiance = original_input[:, 0:3]
-        x_albedo = original_input[:, 3:6]
+            logits = x_final_out_f32[:, :self.kernel_num]
+            x_guidemap = torch.exp(logits)
+            x_alpha = self.softmax(x_final_out_f32[:, self.kernel_num:])
 
-        # 設定縮放因子，將 HDR 數值強制壓在 65504 的安全線內
-        scale_factor = 100.0
-        x_irradiance_scaled = x_irradiance / scale_factor
+            x_out = 0.0
+            for i in range(self.kernel_num):
+                # 取出卷積權重並確保為 FP32
+                conv_weight = self.convSs[i].weight.float()
+                padding = self.convSs[i].padding
+                
+                # 手動使用 F.conv2d 代替 self.convSs[i]()，以避免權重型態跑掉
+                x_guidemap_windowsum = F.conv2d(x_guidemap[:, i:(i+1)], conv_weight, padding=padding)
+                
+                # 計算分子
+                numerator_input = (x_guidemap[:, i:(i+1)] * x_irradiance).view(-1, 1, H, W)
+                filtered = F.conv2d(numerator_input, conv_weight, padding=padding, groups=1).view(B, -1, H, W)
+                
+                x_out += x_alpha[:, i:i+1] * (filtered / (x_guidemap_windowsum + 1e-6))
 
-        # 4. 進行 Kernel Reconstruction 和 Filtering
-        x_out = 0.0
-        for i in range(self.kernel_num):
-            x_guidemap_windowsum = self.convSs[i](x_guidemap[:, i:(i+1)])
-            
-            # 使用縮小後的 Irradiance 進行滑動視窗積分，徹底免疫 FP16 溢位
-            filtered = self.convSs[i]((x_guidemap[:, i:(i+1)] * x_irradiance_scaled).view(-1, 1, H, W)).view(B, -1, H, W)
-            
-            # 加上 1e-4 避免除以零
-            x_out += x_alpha[:, i:i+1] * (filtered / (x_guidemap_windowsum + 1e-4))
+            # 乘上 Albedo 獲得最終渲染結果
+            x_out = x_out * x_albedo
 
-        # 乘上 Albedo 獲得最終渲染結果
-        x_out = x_out * x_albedo
-
-        # 在輸出的最後一刻，才把數值放大 100 倍還原真實亮度
-        x_out = x_out * scale_factor
-
-        x_out = torch.clamp(x_out, min=0.0, max=65000.0)
+        # 離開 with 區塊前，將結果轉回原本的 dtype (FP16) 輸出給 YOLO 的 Loss 函數
+        x_out = x_out.to(features.dtype)
         
         return x_out
 
 class WSKPNConv(Conv):
     # WSKPN 專用的第一層卷積，內建 Gamma Correction 預處理
     def forward(self, x):
-        # x 是原始的 10 通道 HDR 輸入：[Irradiance(3), Albedo(3), Normal(3), Depth(1)]
+        # x 是原始的 11 通道 HDR 輸入：[Irradiance(3), Albedo(3), Roughness(1), Normal(3), Depth(1)]
         x_irradiance = x[:, 0:3]
         x_albedo = x[:, 3:6]
         

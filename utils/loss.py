@@ -11,7 +11,7 @@ def smooth_BCE(eps=0.1):  # https://github.com/ultralytics/yolov3/issues/238#iss
     return 1.0 - 0.5 * eps, 0.5 * eps
 
 class SMAPELoss(nn.Module):
-    def __init__(self, eps=1e-4):
+    def __init__(self, eps=0.01):
         super(SMAPELoss, self).__init__()
         self.eps = eps
     
