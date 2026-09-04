@@ -51,13 +51,44 @@ def ComputeMetrics(truth_img, test_img):
 
 def Inference(model, device, dataloader, saving_root=""):
     model.eval()
+
+    start_event = torch.cuda.Event(enable_timing=True)
+    backbone_event = torch.cuda.Event(enable_timing=True)
+    neck_event = torch.cuda.Event(enable_timing=True)
+    auxiliary_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    backbone_end_idx = 9
+    neck_end_idx = 22
+    auxiliary_end_idx = -2
+    def record_backbone_time(module, input, output):
+        backbone_event.record()
+    def record_neck_time(module, input, output):
+        neck_event.record()
+    def record_auxiliary_time(module, input, output):
+        auxiliary_event.record()
+
+    if hasattr(model, 'ema') and model.ema is not None:
+        actual_model = model.ema.model
+    elif hasattr(model, 'module'):
+        actual_model = model.module.model
+    else:
+        actual_model = model.model
+    hook_handle = actual_model[backbone_end_idx].register_forward_hook(record_backbone_time)
+    hook_handle2 = actual_model[neck_end_idx].register_forward_hook(record_neck_time)
+    hook_handle3 = actual_model[auxiliary_end_idx].register_forward_hook(record_auxiliary_time)
+    print(f"layer num: {len(actual_model)}")
+
     SSIMs = []
     PSNRs = []
     RMSEs = []
     # Flips = []
-    runtime = []
     # GPU_runtime = [] # only work on GPU
-    total_detection_time = 0.0
+    warmup = 1
+    detection_time = []
+    backbone_time = []
+    neck_time = []
+    auxiliary_time = []
+    head_time = []
     with torch.no_grad():
         for img_idx, (inputs_crops, targets_crops) in enumerate(dataloader):
             inputs = inputs_crops.to(device, non_blocking=True)
@@ -71,22 +102,26 @@ def Inference(model, device, dataloader, saving_root=""):
             if pad_h > 0 or pad_w > 0:
                 inputs = F.pad(inputs, (0, pad_w, 0, pad_h), mode='replicate')
 
-            # starter = torch.cuda.Event(enable_timing=True) # only work on GPU
-            # ender = torch.cuda.Event(enable_timing=True) # only work on GPU
+            start_event.record()
 
-            start_time = time.time()
-            # starter.record() # only work on GPU
             outputs = model(inputs).detach()
-            # ender.record() # only work on GPU
-            # torch.cuda.synchronize() # only work on GPU
-            end_time = time.time()
-            detection_time = end_time - start_time
-            total_detection_time += detection_time
-            if len(runtime) < 11:
-                runtime.append(detection_time)
-            # if len(GPU_runtime) < 11:
-            #     GPU_runtime.append(starter.elapsed_time(ender))  # only work on GPU
-            print(f"Processing image {img_idx} took {end_time - start_time:.4f} seconds")
+
+            end_event.record()
+            torch.cuda.synchronize()
+
+            # 計算執行時間
+            bb_time = start_event.elapsed_time(backbone_event)
+            n_time = backbone_event.elapsed_time(neck_event)
+            a_time = neck_event.elapsed_time(auxiliary_event)
+            h_time = auxiliary_event.elapsed_time(end_event)
+            full_time = start_event.elapsed_time(end_event)
+            if img_idx >= warmup:
+                backbone_time.append(bb_time)
+                neck_time.append(n_time)
+                auxiliary_time.append(a_time)
+                head_time.append(h_time)
+                detection_time.append(full_time)
+            print(f"Image {img_idx} | Backbone: {bb_time:.2f} ms | Neck: {n_time:.2f} ms | Auxiliary: {a_time:.2f} ms | Head: {h_time:.2f} ms | Total: {full_time:.2f} ms")
 
             # 將剛才補齊的邊緣裁切掉
             if pad_h > 0 or pad_w > 0:
@@ -103,8 +138,20 @@ def Inference(model, device, dataloader, saving_root=""):
 
             pyexr.write(os.path.join(saving_root, str(img_idx)+".exr"), output)
 
-    print(f"total detection time =  {total_detection_time / len(dataloader):.4f} seconds")
-    print(f"runtime max: {max(runtime):.4f} seconds, min: {min(runtime):.4f} seconds")
+    hook_handle.remove()
+    hook_handle2.remove()
+    hook_handle3.remove()
+
+    mean_detection_time = sum(detection_time) / len(detection_time)
+    mean_backbone_time = sum(backbone_time) / len(backbone_time)
+    mean_neck_time = sum(neck_time) / len(neck_time)
+    mean_auxiliary_time = sum(auxiliary_time) / len(auxiliary_time)
+    mean_head_time = sum(head_time) / len(head_time)
+    print(f"backbone | max: {max(backbone_time):.2f} ms | min: {min(backbone_time):.2f} ms | mean: {mean_backbone_time:.2f} ms")
+    print(f"neck | max: {max(neck_time):.2f} ms | min: {min(neck_time):.2f} ms | mean: {mean_neck_time:.2f} ms")
+    print(f"auxiliary | max: {max(auxiliary_time):.2f} ms | min: {min(auxiliary_time):.2f} ms | mean: {mean_auxiliary_time:.2f} ms")
+    print(f"head | max: {max(head_time):.2f} ms | min: {min(head_time):.2f} ms | mean: {mean_head_time:.2f} ms")
+    print(f"runtime | max: {max(detection_time):.2f} ms | min: {min(detection_time):.2f} ms | mean: {mean_detection_time:.2f} ms")
     # for i, t in enumerate(GPU_runtime): # only work on GPU
     #         print(f"[{i}] {t:.4f} ms")    
     print("Test:")
@@ -125,7 +172,7 @@ def Inference(model, device, dataloader, saving_root=""):
     np.savetxt(os.path.join(saving_root, "rmse.txt"), RMSEs, fmt="%s")
     # np.savetxt(os.path.join(saving_root, "flips.txt"), Flips, fmt="%s")
 
-    return SSIM_mean, PSNR_mean, max(runtime), min(runtime), total_detection_time / len(dataloader), runtime
+    return SSIM_mean, PSNR_mean, max(detection_time), min(detection_time), mean_detection_time, detection_time
 
 def PlotResults(saving_root, amount_global, amount_local, ssim_global, ssim_local, runtime_global, runtime_local, avg_runtime_global, max_runtime_global, min_runtime_global, avg_runtime_local, max_runtime_local, min_runtime_local):
     plt.figure(figsize=(10, 6))
@@ -180,13 +227,13 @@ if __name__ == "__main__":
     dataset_test = dataset.BMFRFullResAlDataset(database, use_test=True)
     dataloader_test = torch.utils.data.DataLoader(dataset_test, batch_size=1, shuffle=False, num_workers=0, pin_memory=True)
 
-    timestamp = "open-source-test"
-    episode_name = "general"
+    timestamp = "freeze"
+    episode_name = "bistro"
     test_saving_root = os.path.join("results", timestamp, episode_name)
     os.makedirs(test_saving_root, exist_ok=True)
 
     # 載入 YOLO 改版後的權重
-    weights = 'runs/train/exp46/weights/best.pt' 
+    weights = 'runs/20260728_bistro_freeze(30 epoch)/weights/best.pt' 
     model_deployment = attempt_load(weights, device=device)
     model_deployment.eval()
     

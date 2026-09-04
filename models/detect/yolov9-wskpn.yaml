@@ -63,43 +63,43 @@ head:
    # elan-2 block
    [-1, 1, RepNCSPELAN4, [256, 256, 128, 1]],  # 16 (P3/8-small)
 
-   # avg-conv-down merge
-   [-1, 1, ADown, [256]],
-   [[-1, 13], 1, Concat, [1]],  # cat head P4
+  #  # avg-conv-down merge
+  #  [-1, 1, ADown, [256]],
+  #  [[-1, 13], 1, Concat, [1]],  # cat head P4
 
-   # elan-2 block
-   [-1, 1, RepNCSPELAN4, [512, 512, 256, 1]],  # 19 (P4/16-medium)
+  #  # elan-2 block
+  #  [-1, 1, RepNCSPELAN4, [512, 512, 256, 1]],  # 19 (P4/16-medium)
 
-   # avg-conv-down merge
-   [-1, 1, ADown, [512]],
-   [[-1, 10], 1, Concat, [1]],  # cat head P5
+  #  # avg-conv-down merge
+  #  [-1, 1, ADown, [512]],
+  #  [[-1, 10], 1, Concat, [1]],  # cat head P5
 
-   # elan-2 block
-   [-1, 1, RepNCSPELAN4, [512, 512, 256, 1]],  # 22 (P5/32-large)
+  #  # elan-2 block
+  #  [-1, 1, RepNCSPELAN4, [512, 512, 256, 1]],  # 22 (P5/32-large)
    
    
-   # multi-level reversible auxiliary branch
+  #  # multi-level reversible auxiliary branch
    
-   # routing
-   [5, 1, CBLinear, [[256]]], # 23
-   [7, 1, CBLinear, [[256, 512]]], # 24
-   [9, 1, CBLinear, [[256, 512, 512]]], # 25
+  #  # routing
+  #  [5, 1, CBLinear, [[256]]], # 23
+  #  [7, 1, CBLinear, [[256, 512]]], # 24
+  #  [9, 1, CBLinear, [[256, 512, 512]]], # 25
    
-   # conv down
-   [0, 1, Conv, [64, 3, 2]],  # 26-P1/2
+  #  # conv down
+  #  [0, 1, Conv, [64, 3, 2]],  # 26-P1/2
 
-   # conv down
-   [-1, 1, Conv, [128, 3, 2]],  # 27-P2/4
+  #  # conv down
+  #  [-1, 1, Conv, [128, 3, 2]],  # 27-P2/4
 
-   # elan-1 block
-   [-1, 1, RepNCSPELAN4, [256, 128, 64, 1]],  # 28
+  #  # elan-1 block
+  #  [-1, 1, RepNCSPELAN4, [256, 128, 64, 1]],  # 28
 
-   # avg-conv down fuse
-   [-1, 1, ADown, [256]],  # 29-P3/8
-   [[23, 24, 25, -1], 1, CBFuse, [[0, 0, 0]]], # 30  
+  #  # avg-conv down fuse
+  #  [-1, 1, ADown, [256]],  # 29-P3/8
+  #  [[23, 24, 25, -1], 1, CBFuse, [[0, 0, 0]]], # 30  
 
-   # elan-2 block
-   [-1, 1, RepNCSPELAN4, [512, 256, 128, 1]],  # 31
+  #  # elan-2 block
+  #  [-1, 1, RepNCSPELAN4, [512, 256, 128, 1]],  # 31
 
   #  # avg-conv down fuse
   #  [-1, 1, ADown, [512]],  # 32-P4/16
@@ -121,5 +121,5 @@ head:
 
    # detect
   #  [[31, 34, 37, 16, 19, 22], 1, DualDDetect, [nc]],  # DualDDetect(A3, A4, A5, P3, P4, P5)
-   [[31, 0], 1, WSKPNHead, [6]],
+   [[16, 0], 1, WSKPNHead, [6]],
   ]
